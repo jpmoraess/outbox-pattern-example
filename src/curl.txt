@@ -1,0 +1,6 @@
+curl -X POST http://localhost:9000/api/v1/outbox/events \
+  -H "Content-Type: application/json" \
+  -d '{
+        "aggregateId": "order-54321",
+        "payload": "{\"orderId\": \"order-54321\", \"price\": 1249.90}"
+      }'
