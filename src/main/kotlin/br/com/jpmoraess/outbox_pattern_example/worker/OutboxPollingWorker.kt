@@ -14,6 +14,7 @@ class OutboxPollingWorker(
     @Scheduled(fixedDelay = 5000) // Poll every 5 seconds
     fun run() {
         logger.info("Starting Outbox Polling Worker...")
-        outboxService.publishPendingEvents(limit = 10)
+        // TODO: parametrize the limit
+        outboxService.publishPendingEvents(limit = 25)
     }
 }

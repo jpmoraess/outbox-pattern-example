@@ -1,6 +1,7 @@
 package br.com.jpmoraess.outbox_pattern_example.repository
 
 import br.com.jpmoraess.outbox_pattern_example.entity.OutboxEvent
+import br.com.jpmoraess.outbox_pattern_example.entity.OutboxStatus
 import java.time.LocalDateTime
 import org.springframework.data.jpa.repository.JpaRepository
 import org.springframework.data.jpa.repository.Modifying
@@ -13,20 +14,6 @@ interface OutboxRepository : JpaRepository<OutboxEvent, Long> {
 
     @Query("SELECT e FROM OutboxEvent e WHERE e.id IN :ids")
     fun findByIds(@Param("ids") ids: List<Long>): List<OutboxEvent>
-
-    @Modifying
-    @Query(
-        """
-        UPDATE OutboxEvent e
-        SET e.status = 'PROCESSING',
-            e.claimedAt = :now
-        WHERE e.id IN :ids AND e.status IN ('STARTED', 'FAILED')
-    """
-    )
-    fun claimEvents(
-        @Param("now") now: LocalDateTime,
-        @Param("ids") ids: List<Long>
-    ): Int
 
     @Query(
         """
@@ -43,10 +30,28 @@ interface OutboxRepository : JpaRepository<OutboxEvent, Long> {
     @Query(
         """
         UPDATE OutboxEvent e
+        SET e.status = 'PROCESSING',
+            e.claimedAt = :now
+        WHERE e.id IN :ids AND e.status IN ('STARTED', 'FAILED')
+    """
+    )
+    fun claimEvents(
+        @Param("now") now: LocalDateTime,
+        @Param("ids") ids: List<Long>
+    ): Int
+
+    @Modifying
+    @Query(
+        """
+        UPDATE OutboxEvent e
         SET e.status = 'FAILED',
             e.claimedAt = NULL
         WHERE e.status = 'PROCESSING' AND e.claimedAt < :expiredBefore
     """
     )
     fun releaseStuckEvents(@Param("expiredBefore") expiredBefore: LocalDateTime): Int
+
+    @Modifying
+    @Query("UPDATE OutboxEvent e SET e.status = :status, e.claimedAt = null WHERE e.id = :id")
+    fun updateStatusById(@Param("id") id: Long, @Param("status") status: OutboxStatus): Int
 }

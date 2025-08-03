@@ -4,9 +4,9 @@ import br.com.jpmoraess.outbox_pattern_example.entity.OutboxEvent
 import br.com.jpmoraess.outbox_pattern_example.entity.OutboxStatus
 import br.com.jpmoraess.outbox_pattern_example.repository.OutboxRepository
 import java.time.LocalDateTime
+import java.util.concurrent.CompletableFuture
 import org.slf4j.LoggerFactory
 import org.springframework.kafka.core.KafkaTemplate
-import org.springframework.orm.ObjectOptimisticLockingFailureException
 import org.springframework.stereotype.Service
 import org.springframework.transaction.annotation.Transactional
 
@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional
 class OutboxService(
     private val outboxRepository: OutboxRepository,
     private val outboxClaimService: OutboxClaimService,
+    private val outboxStatusService: OutboxStatusService,
     private val kafkaTemplate: KafkaTemplate<String, String>
 ) {
 
@@ -29,45 +30,43 @@ class OutboxService(
      */
     fun publishPendingEvents(limit: Int, now: LocalDateTime = LocalDateTime.now()) {
         val claimedEvents = outboxClaimService.fetchAndClaimEvents(limit, now)
-        if (claimedEvents.isEmpty())
-            return
+        if (claimedEvents.isEmpty()) return
 
-        claimedEvents.forEach { event ->
-            try {
-                kafkaTemplate.send("topic", event.aggregateId, event.payload)
-                    .whenComplete { _, throwable ->
-                        if (throwable != null) {
-                            logger.error("Failed to publish event ${event.aggregateId}", throwable)
-                            updateStatusSafely(event, OutboxStatus.FAILED)
-                        } else {
-                            logger.info("Successfully published event ${event.aggregateId}")
-                            updateStatusSafely(event, OutboxStatus.COMPLETED)
-                        }
-                    }
-            } catch (e: Exception) {
-                logger.error("Exception sending event ${event.aggregateId}", e)
-                updateStatusSafely(event, OutboxStatus.FAILED)
-            }
+        val futures = claimedEvents.map { event -> sendToKafka(event) }
+
+        try {
+            CompletableFuture.allOf(*futures.toTypedArray()).join()
+            logger.info("Finished publishing ${futures.size} events.")
+        } catch (e: Exception) {
+            logger.error("Error while processing outbox events", e)
         }
     }
 
     /**
-     * Updates the status of an outbox event safely, handling optimistic locking exceptions.
-     * This method is used to change the status of an event after processing it.
+     * Sends a single outbox event to Kafka.
+     * This method is used to publish an event immediately, typically after it has been created.
      *
-     * @param event The OutboxEvent entity to update.
-     * @param status The new status to set for the event.
+     * @param event The OutboxEvent entity to be sent.
+     * @return A CompletableFuture that completes when the send operation is done.
      */
-    @Transactional
-    fun updateStatusSafely(event: OutboxEvent, status: OutboxStatus) {
-        try {
-            event.status = status
-            event.claimedAt = null
-            outboxRepository.save(event)
-        } catch (_: ObjectOptimisticLockingFailureException) {
-            logger.warn("Optimistic locking conflict on event ${event.aggregateId}. Ignoring.")
-        } catch (e: Exception) {
-            logger.error("Failed to update event ${event.aggregateId} to $status: ${e.message}", e)
+    private fun sendToKafka(event: OutboxEvent): CompletableFuture<Void> {
+        return CompletableFuture<Void>().also { completion ->
+            kafkaTemplate.send("topic", event.aggregateId, event.payload)
+                .whenComplete { _, throwable ->
+                    try {
+                        if (throwable != null) {
+                            logger.error("Failed to publish event ${event.aggregateId}", throwable)
+                            outboxStatusService.updateStatusSafely(event, OutboxStatus.FAILED)
+                        } else {
+                            logger.info("Successfully published event ${event.aggregateId}")
+                            outboxStatusService.updateStatusSafely(event, OutboxStatus.COMPLETED)
+                        }
+                    } catch (e: Exception) {
+                        logger.error("Error updating status for event ${event.aggregateId}", e)
+                    } finally {
+                        completion.complete(null)
+                    }
+                }
         }
     }
 
